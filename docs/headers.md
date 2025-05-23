@@ -91,16 +91,16 @@ See [SL.str.5: Use `std::byte` to refer to byte values that do not necessarily r
 ### Non-member functions
 
 ```cpp
-template <class IntegerType, class = std::enable_if_t<std::is_integral<IntegerType>::value>>
+template <class IntegerType, std::enable_if_t<std::is_integral<IntegerType>::value, bool> = true>
 constexpr byte& operator<<=(byte& b, IntegerType shift) noexcept;
 
-template <class IntegerType, class = std::enable_if_t<std::is_integral<IntegerType>::value>>
+template <class IntegerType, std::enable_if_t<std::is_integral<IntegerType>::value, bool> = true>
 constexpr byte operator<<(byte b, IntegerType shift) noexcept;
 
-template <class IntegerType, class = std::enable_if_t<std::is_integral<IntegerType>::value>>
+template <class IntegerType, std::enable_if_t<std::is_integral<IntegerType>::value, bool> = true>
 constexpr byte& operator>>=(byte& b, IntegerType shift) noexcept;
 
-template <class IntegerType, class = std::enable_if_t<std::is_integral<IntegerType>::value>>
+template <class IntegerType, std::enable_if_t<std::is_integral<IntegerType>::value, bool> = true>
 constexpr byte operator>>(byte b, IntegerType shift) noexcept;
 ```
 
@@ -134,7 +134,7 @@ constexpr byte operator~(byte b) noexcept;
 Bitwise negation of a `byte`. Flips all bits. Zeroes become ones, ones become zeroes.
 
 ```cpp
-template <class IntegerType, class = std::enable_if_t<std::is_integral<IntegerType>::value>>
+template <class IntegerType, std::enable_if_t<std::is_integral<IntegerType>::value, bool> = true>
 constexpr IntegerType to_integer(byte b) noexcept;
 ```
 
@@ -224,6 +224,14 @@ When a nullptr check fails, `std::terminate` is called.
 
 See [F.23: Use a `not_null<T>` to indicate that “null” is not a valid value](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#Rf-nullptr)
 
+#### Member Types
+
+```cpp
+using element_type = T;
+```
+
+The type of the pointer or smart pointer that is managed by this object.
+
 #### Member functions
 
 ##### Construct/Copy
@@ -294,6 +302,12 @@ void operator[](std::ptrdiff_t) const = delete;
 
 Array index operator is explicitly deleted. Pointers point to single objects ([I.13: Do not pass an array as a single pointer](http://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#Ri-array)), so don't allow treating them as an array.
 
+```cpp
+void swap(not_null<T>& other) { std::swap(ptr_, other.ptr_); }
+```
+
+Swaps contents with another `gsl::not_null` object.
+
 #### Non-member functions
 
 ```cpp
@@ -302,6 +316,13 @@ auto make_not_null(T&& t) noexcept;
 ```
 
 Creates a `gsl::not_null` object, deducing the target type from the type of the argument.
+
+```cpp
+template <typename T, std::enable_if_t<std::is_move_assignable<T>::value && std::is_move_constructible<T>::value, bool> = true>
+void swap(not_null<T>& a, not_null<T>& b);
+```
+
+Swaps the contents of two `gsl::not_null` objects.
 
 ```cpp
 template <class T, class U>
@@ -391,22 +412,36 @@ The `gsl::span` is based on the standardized version of `std::span` which was ad
 deprecate `gsl::span` when `std::span` finished standardization, however that plan changed when the runtime bounds checking
 was removed from `std::span`'s design.
 
-The only difference between `gsl::span` and `std::span` is that `gsl::span` strictly enforces runtime bounds checking.
-Any violations of the bounds check results in termination of the program.
-Like `gsl::span`, `gsl::span`'s iterators also differ from `std::span`'s iterator in that all access operations are bounds checked.
+The key differences between `gsl::span` and `std::span` are:
+- `gsl::span` strictly enforces runtime bounds checking for all access operations
+- Any violations of the bounds check results in termination of the program
+- `gsl::span`'s iterators also perform bounds checking, unlike `std::span`'s iterators
 
 #### Which version of span should I use?
 
-##### Use `gsl::span` if
+The following table compares the different span implementations to help you choose which one is best for your project:
 
-- you want to guarantee bounds safety in your project.
-  - All data accessing operations use bounds checking to ensure you are only accessing valid memory.
-- your project uses C++14 or C++17.
-  - `std::span` is not available as it was not introduced into the STL until C++20.
+| Feature/Version | `std::span` (C++20/23) | Hardened `std::span` (C++26) | `gsl::span` |
+|-----------------|------------------------|------------------------------|-------------|
+| **C++ Standard** | Requires C++20 or later | Requires C++26 or backported implementation | Works with C++14 or later |
+| **Element Access** | No bounds checking | Bounds checking | Bounds checking |
+| **Iterator Safety** | No bounds checking | Implementation-defined, may depend on vendor | Full bounds checking |
+| **Error Behavior** | Undefined behavior on invalid access | Implementation-defined, may be configurable | Always calls [`std::terminate()`](https://en.cppreference.com/w/cpp/error/terminate) via [gsl::details::terminate()](https://github.com/microsoft/GSL/blob/main/include/gsl/assert#L111-L118) |
+| **Performance** | Fastest (no checking) | Varies by implementation and configuration | May have performance impact from bounds checking |
 
-##### Use `std::span` if
+**Recommendations:**
 
-- your project is C++20 and you need the performance offered by `std::span`.
+- **C++14 & C++17 projects**: Use `gsl::span` as `std::span` is not available.
+- **C++20 & C++23 projects**: 
+  - Use `gsl::span` if safety is your priority.
+  - Use `std::span` if performance is critical and you're confident in your index calculations.
+- **C++26 projects**: 
+  - Use `gsl::span` if you need guaranteed iterator safety across all platforms.
+  - Use hardened `std::span` if you want standard library compliance and acceptable safety.
+
+**Implementation notes for hardened `std::span` in C++26:**
+- For MSVC: See [Microsoft STL Hardening](https://github.com/microsoft/STL/wiki/STL-Hardening)
+- For Clang/LLVM: See [libc++ Hardening](https://libcxx.llvm.org/Hardening.html)
 
 #### Types
 
@@ -663,10 +698,6 @@ template <class Container>
 constexpr span<typename Container::value_type> make_span(Container& cont);
 template <class Container>
 constexpr span<const typename Container::value_type> make_span(const Container& cont);
-template <class Ptr>
-constexpr span<typename Ptr::element_type> make_span(Ptr& cont, std::size_t count);
-template <class Ptr>
-constexpr span<typename Ptr::element_type> make_span(Ptr& cont);
 ```
 
 Utility function for creating a `span` with [`gsl::dynamic_extent`](#user-content-H-span_ext-dynamic_extent) from
@@ -858,3 +889,10 @@ constexpr auto at(std::span<T, extent> sp, const index i) -> decltype(sp[sp.size
 This overload returns a reference to the `i`s element of the `std::span` `sp`. It [`Expects`](#user-content-H-assert-expects) that the provided index is within the bounds of the array.
 
 For [`gsl::at`](#user-content-H-span_ext-at) for [`gsl::span`](#user-content-H-span-span) see header [`span_ext`](#user-content-H-span_ext).
+
+```cpp
+template <class T, std::enable_if_t<std::is_move_assignable<T>::value && std::is_move_constructible<T>::value>>
+void swap(T& a, T& b);
+```
+
+Swaps the contents of two objects. Exists only to specialize `gsl::swap<T>(gsl::not_null<T>&, gsl::not_null<T>&)`.

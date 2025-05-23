@@ -17,9 +17,27 @@
 #include <gsl/pointers> // for not_null, operator<, operator<=, operator>
 #include <gtest/gtest.h>
 
+#include <type_traits> // for declval
+
 #include "deathTestCommon.h"
 
 using namespace gsl;
+
+#if __cplusplus >= 201703l
+using std::void_t;
+#else  // __cplusplus >= 201703l
+template <class...>
+using void_t = void;
+#endif // __cplusplus < 201703l
+
+// stand-in for a user-defined ref-counted class
+template <typename T>
+struct RefCounted
+{
+    RefCounted(T* p) : p_(p) {}
+    operator T*() { return p_; }
+    T* p_;
+};
 
 namespace
 {
@@ -43,11 +61,153 @@ GSL_SUPPRESS(f.4) // NO-FORMAT: attribute
 // clang-format on
 bool strict_helper_const(strict_not_null<const int*> p) { return *p == 12; }
 
-#ifdef CONFIRM_COMPILATION_ERRORS
 int* return_pointer() { return nullptr; }
-const int* return_pointer_const() { return nullptr; }
-#endif
 } // namespace
+
+template <typename U, typename = void>
+static constexpr bool CtorCompilesFor_A = false;
+template <typename U>
+static constexpr bool
+    CtorCompilesFor_A<U, void_t<decltype(gsl::strict_not_null<void*>{std::declval<U>()})>> = true;
+
+template <typename U, int N, typename = void>
+static constexpr bool CtorCompilesFor_B = false;
+template <typename U, int N>
+static constexpr bool CtorCompilesFor_B<U, N, void_t<decltype(gsl::strict_not_null<U>{N})>> = true;
+
+template <typename U, typename = void>
+static constexpr bool DefaultCtorCompilesFor = false;
+template <typename U>
+static constexpr bool DefaultCtorCompilesFor<U, void_t<decltype(gsl::strict_not_null<U>{})>> = true;
+
+template <typename U, typename = void>
+static constexpr bool CtorCompilesFor_C = false;
+template <typename U>
+static constexpr bool CtorCompilesFor_C<
+    U, void_t<decltype(gsl::strict_not_null<U*>{std::declval<std::unique_ptr<U>>()})>> = true;
+
+TEST(strict_notnull_tests, TestStrictNotNullConstructors)
+{
+    {
+        static_assert(CtorCompilesFor_A<void*>, "CtorCompilesFor_A<void*>");
+        static_assert(!CtorCompilesFor_A<std::nullptr_t>, "!CtorCompilesFor_A<std::nullptr_t>");
+        static_assert(!CtorCompilesFor_B<void*, 0>, "!CtorCompilesFor_B<void*, 0>");
+        static_assert(!DefaultCtorCompilesFor<void*>, "!DefaultCtorCompilesFor<void*>");
+        static_assert(!CtorCompilesFor_C<int>, "CtorCompilesFor_C<int>");
+#ifdef CONFIRM_COMPILATION_ERRORS
+        // Forbid non-nullptr assignable types
+        strict_not_null<std::vector<int>> f(std::vector<int>{1});
+        strict_not_null<int> z(10);
+        strict_not_null<std::vector<int>> y({1, 2});
+#endif
+    }
+
+    const auto terminateHandler = std::set_terminate([] {
+        std::cerr << "Expected Death. TestNotNullConstructors";
+        std::abort();
+    });
+    const auto expected = GetExpectedDeathString(terminateHandler);
+
+    {
+        // from shared pointer
+        int i = 12;
+        auto rp = RefCounted<int>(&i);
+        strict_not_null<int*> p(rp);
+        EXPECT_TRUE(p.get() == &i);
+
+        strict_not_null<std::shared_ptr<int>> x(
+            std::make_shared<int>(10)); // shared_ptr<int> is nullptr assignable
+
+        int* pi = nullptr;
+        EXPECT_DEATH((strict_not_null<decltype(pi)>(pi)), expected);
+    }
+
+    {
+        // from unique pointer
+        strict_not_null<std::unique_ptr<int>> x(
+            std::make_unique<int>(10)); // unique_ptr<int> is nullptr assignable
+
+        EXPECT_DEATH((strict_not_null<std::unique_ptr<int>>(std::unique_ptr<int>{})), expected);
+    }
+
+    {
+        // from pointer to local
+        int t = 42;
+
+        strict_not_null<int*> x{&t};
+        helper(&t);
+        helper_const(&t);
+
+        EXPECT_TRUE(*x == 42);
+    }
+
+    {
+        // from raw pointer
+        // from strict_not_null pointer
+
+        int t = 42;
+        int* p = &t;
+
+        strict_not_null<int*> x{p};
+        helper(p);
+        helper_const(p);
+        helper(x);
+        helper_const(x);
+
+        EXPECT_TRUE(*x == 42);
+    }
+
+    {
+        // from raw const pointer
+        // from strict_not_null const pointer
+
+        int t = 42;
+        const int* cp = &t;
+
+        strict_not_null<const int*> x{cp};
+        helper_const(cp);
+        helper_const(x);
+
+        EXPECT_TRUE(*x == 42);
+    }
+
+    {
+        // from strict_not_null const pointer, using auto
+        int t = 42;
+        const int* cp = &t;
+
+        auto x = strict_not_null<const int*>{cp};
+
+        EXPECT_TRUE(*x == 42);
+    }
+
+    {
+        // from returned pointer
+
+        EXPECT_DEATH(helper(return_pointer()), expected);
+        EXPECT_DEATH(helper_const(return_pointer()), expected);
+    }
+}
+
+template <typename U, typename = void>
+static constexpr bool StrictHelperCompilesFor = false;
+template <typename U>
+static constexpr bool
+    StrictHelperCompilesFor<U, void_t<decltype(strict_helper(std::declval<U>()))>> = true;
+
+
+template <typename U, typename = void>
+static constexpr bool StrictHelperConstCompilesFor = false;
+template <typename U>
+static constexpr bool
+    StrictHelperConstCompilesFor<U, void_t<decltype(strict_helper_const(std::declval<U>()))>> =
+        true;
+
+
+template <typename U, typename = void>
+static constexpr bool HelperCompilesFor = false;
+template <typename U>
+static constexpr bool HelperCompilesFor<U, void_t<decltype(helper(std::declval<U>()))>> = true;
 
 TEST(strict_notnull_tests, TestStrictNotNull)
 {
@@ -57,14 +217,15 @@ TEST(strict_notnull_tests, TestStrictNotNull)
 
 #ifdef CONFIRM_COMPILATION_ERRORS
         strict_not_null<int*> snn = &x;
-        strict_helper(&x);
-        strict_helper_const(&x);
-        strict_helper(return_pointer());
-        strict_helper_const(return_pointer_const());
 #endif
+        static_assert(!StrictHelperCompilesFor<int*>, "!StrictHelperCompilesFor<int*>");
+        static_assert(!StrictHelperConstCompilesFor<int*>,
+                      "!StrictHelperCompilesFor<int*>");
 
         const strict_not_null<int*> snn1{&x};
 
+        static_assert(StrictHelperCompilesFor<const strict_not_null<int*>>,
+                          "StrictHelperCompilesFor<const strict_not_null<int*>>");
         helper(snn1);
         helper_const(snn1);
 
@@ -77,17 +238,17 @@ TEST(strict_notnull_tests, TestStrictNotNull)
 
 #ifdef CONFIRM_COMPILATION_ERRORS
         strict_not_null<int*> snn = &x;
-        strict_helper(&x);
-        strict_helper_const(&x);
-        strict_helper(return_pointer());
-        strict_helper_const(return_pointer_const());
 #endif
+        static_assert(!StrictHelperCompilesFor<const int*>, "!StrictHelperFor<const int*>");
+        static_assert(!StrictHelperConstCompilesFor<const int*>,
+                      "!StrictHelperCompilesFor<const int*>");
 
         const strict_not_null<const int*> snn1{&x};
 
-#ifdef CONFIRM_COMPILATION_ERRORS
-        helper(snn1);
-#endif
+        static_assert(!HelperCompilesFor<const strict_not_null<const int*>>,
+                      "!HelperCompilesFor<const strict_not_null<const int*>>");
+        static_assert(StrictHelperConstCompilesFor<const strict_not_null<const int*>>,
+                      "StrictHelperCompilesFor<const strict_not_null<const int*>>");
         helper_const(snn1);
 
         EXPECT_TRUE(*snn1 == 42);
@@ -114,9 +275,8 @@ TEST(strict_notnull_tests, TestStrictNotNull)
         strict_not_null<const int*> snn1{&x};
         const strict_not_null<const int*> snn2{&x};
 
-#ifdef CONFIRM_COMPILATION_ERRORS
-        strict_helper(snn1);
-#endif
+        static_assert(!StrictHelperCompilesFor<strict_not_null<const int*>>,
+                      "!StrictHelperCompilesFor<strict_not_null<const int*>>");
         strict_helper_const(snn1);
         strict_helper_const(snn2);
 
@@ -148,9 +308,8 @@ TEST(strict_notnull_tests, TestStrictNotNull)
         const not_null<const int*> nn1 = snn;
         const not_null<const int*> nn2{snn};
 
-#ifdef CONFIRM_COMPILATION_ERRORS
-        helper(snn);
-#endif
+        static_assert(!HelperCompilesFor<strict_not_null<const int*>>,
+                      "!HelperCompilesFor<strict_not_null<const int*>>");
         helper_const(snn);
 
         EXPECT_TRUE(snn == nn1);
@@ -190,9 +349,8 @@ TEST(strict_notnull_tests, TestStrictNotNull)
         const strict_not_null<const int*> snn1{nn};
         const strict_not_null<const int*> snn2{nn};
 
-#ifdef CONFIRM_COMPILATION_ERRORS
-        strict_helper(nn);
-#endif
+        static_assert(!StrictHelperCompilesFor<not_null<const int*>>,
+                      "!StrictHelperCompilesFor<not_null<const int*>>");
         strict_helper_const(nn);
 
         EXPECT_TRUE(snn1 == nn);
@@ -206,12 +364,13 @@ TEST(strict_notnull_tests, TestStrictNotNull)
         EXPECT_TRUE(hash_nn(snn1) == hash_nn(snn2));
         EXPECT_TRUE(hash_snn(snn1) == hash_snn(nn));
     }
+}
 
-#ifdef CONFIRM_COMPILATION_ERRORS
-    {
-        strict_not_null<int*> p{nullptr};
-    }
-#endif
+TEST(pointers_test, member_types)
+{
+    // make sure `element_type` is inherited from `gsl::not_null`
+    static_assert(std::is_same<gsl::strict_not_null<int*>::element_type, int*>::value,
+                  "check member type: element_type");
 }
 
 #if defined(__cplusplus) && (__cplusplus >= 201703L)
@@ -238,9 +397,8 @@ TEST(strict_notnull_tests, TestStrictNotNullConstructorTypeDeduction)
         const int i = 42;
 
         strict_not_null x{&i};
-#ifdef CONFIRM_COMPILATION_ERRORS
-        helper(strict_not_null{&i});
-#endif
+        static_assert(!HelperCompilesFor<strict_not_null<const int*>>,
+                      "!HelperCompilesFor<strict_not_null<const int*>>");
         helper_const(strict_not_null{&i});
 
         EXPECT_TRUE(*x == 42);
@@ -262,9 +420,8 @@ TEST(strict_notnull_tests, TestStrictNotNullConstructorTypeDeduction)
         const int* p = &i;
 
         strict_not_null x{p};
-#ifdef CONFIRM_COMPILATION_ERRORS
-        helper(strict_not_null{p});
-#endif
+        static_assert(!HelperCompilesFor<strict_not_null<const int*>>,
+                      "!HelperCompilesFor<strict_not_null<const int*>>");
         helper_const(strict_not_null{p});
 
         EXPECT_TRUE(*x == 42);
